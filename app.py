@@ -119,6 +119,46 @@ def _apply_field_update_to_dossier(dossier: dict, field_update: dict):
     return None
 
 
+def _merge_research_leaves(sections: dict, dossier_partial: dict):
+    """Pure merge core for merge_research_into_skeleton(). dossier_partial is
+    already nested by section, so section/key come from the dict traversal
+    itself (unlike interview_agent's "section.key" field_updated strings).
+    Same guard-clause validation as _apply_field_update_to_dossier — never
+    raises on an unrecognized section/key.
+
+    Returns (merged_paths, invalid_paths), both lists of "section.key".
+    """
+    merged = []
+    invalid = []
+    for section, fields in dossier_partial.items():
+        for key, leaf in fields.items():
+            if section in sections and key in sections[section]:
+                sections[section][key] = leaf
+                merged.append(f"{section}.{key}")
+            else:
+                invalid.append(f"{section}.{key}")
+    return merged, invalid
+
+
+def merge_research_into_skeleton(dossier_partial: dict) -> list:
+    """Merge Research Agent's dossier_partial into st.session_state.dossier,
+    once, right after research completes and before the interview starts.
+
+    Does not touch last_updated_field — bulk research fills should render
+    already "settled" in the panel (correct icon, no highlight box), unlike
+    the single most-recently-answered interview field.
+
+    Returns the list of successfully merged "section.key" paths.
+    """
+    sections = st.session_state.dossier["sections"]
+    merged, invalid = _merge_research_leaves(sections, dossier_partial)
+
+    for path in invalid:
+        st.session_state.setdefault("field_update_warnings", []).append(path)
+
+    return merged
+
+
 def _sections_for_readiness(sections: dict) -> dict:
     """compute_readiness_score() determines a field's presence by key
     membership, but the live skeleton keeps every field present as an
@@ -287,6 +327,8 @@ def main():
             st.session_state.chat_history.append(
                 {"role": "assistant", "content": research_result["research_summary"]}
             )
+
+            merge_research_into_skeleton(st.session_state.dossier_partial)
 
             try:
                 first_question, interview_messages = start_interview(
