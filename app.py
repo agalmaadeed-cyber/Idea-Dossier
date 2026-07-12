@@ -1,8 +1,9 @@
-"""Idea Dossier — Streamlit chat UI (Lite scope).
+"""Idea Dossier — Streamlit chat UI (Lite scope + live side panel, Iterate).
 
 Chat-only flow: raw idea -> Research Agent -> Interview Agent -> assembled
-Dossier, persisted via storage/db.py. No live side-panel (deferred to
-Iterate). source_type is always "external" in this phase.
+Dossier, persisted via storage/db.py. source_type is always "external" in
+this phase. A live sidebar panel mirrors the Dossier skeleton as the
+interview fills it in.
 """
 
 import json
@@ -14,14 +15,20 @@ import streamlit as st
 from agents.research_agent import run_research
 from agents.interview_agent import start_interview, continue_interview
 from core.dossier_assembly import assemble_dossier
+from core.field_registry import FIELD_REGISTRY, MANDATORY_FIELDS
+from core.readiness import compute_readiness_score
 from storage.db import init_db, save_dossier_version
 
 WELCOME_MESSAGE = "شاركني فكرتك أو ارفع ملفاً من الشريط الجانبي."
 _ARABIC_RE = re.compile(r"[؀-ۿ]")
 
-st.set_page_config(page_title="Idea Dossier", page_icon="📋")
-
-init_db()
+_EVIDENCE_ICONS = {
+    "CONFIRMED": "✅",
+    "ESTIMATE": "📊",
+    "FOUNDER_OPINION": "🗣️",
+    "ASSUMPTION": "⚠️",
+    "UNKNOWN": "❓",
+}
 
 
 def _detect_language(text: str) -> str:
@@ -73,6 +80,115 @@ def _render_chat_history():
             st.markdown(message["content"])
 
 
+# ---------------------------------------------------------------------------
+# Live side panel (Iterate)
+# ---------------------------------------------------------------------------
+
+def build_dossier_skeleton() -> dict:
+    """Build a full Dossier "sections" skeleton from FIELD_REGISTRY, every
+    leaf initialized as UNKNOWN/empty, matching dossier_assembly.py's
+    sections shape (section -> {key -> leaf})."""
+    sections = {}
+    for code, field in FIELD_REGISTRY.items():
+        section, key = field["section"], field["key"]
+        sections.setdefault(section, {})[key] = {
+            "value": None,
+            "evidence_label": "UNKNOWN",
+            "sources": [],
+            "notes": None,
+            "field_code": code,
+            "filled_by": None,
+            "filled_at": None,
+        }
+    return {"sections": sections}
+
+
+def _apply_field_update_to_dossier(dossier: dict, field_update: dict):
+    """Write a continue_interview() field_update into the live dossier
+    skeleton. Never raises — an unrecognized section/key (e.g. a model
+    hallucination) is simply reported back as None instead of writing.
+
+    Returns the "section.key" path on success, or None if the section/key
+    don't exist in the skeleton.
+    """
+    section, _, key = field_update["field_updated"].partition(".")
+    sections = dossier["sections"]
+    if section in sections and key in sections[section]:
+        sections[section][key] = field_update["value"]
+        return field_update["field_updated"]
+    return None
+
+
+def _sections_for_readiness(sections: dict) -> dict:
+    """compute_readiness_score() determines a field's presence by key
+    membership, but the live skeleton keeps every field present as an
+    UNKNOWN placeholder. Build a sparse (filled-only) view so the score
+    reflects actual progress instead of showing 100% from the start."""
+    sparse = {}
+    for section_name, fields in sections.items():
+        filled = {key: leaf for key, leaf in fields.items() if leaf["evidence_label"] != "UNKNOWN"}
+        if filled:
+            sparse[section_name] = filled
+    return sparse
+
+
+def _humanize_key(key: str) -> str:
+    return key.replace("_", " ").title()
+
+
+def _active_section(sections: dict, last_updated_field) -> str:
+    if last_updated_field:
+        return last_updated_field.split(".", 1)[0]
+
+    for code in MANDATORY_FIELDS:
+        field = FIELD_REGISTRY[code]
+        leaf = sections.get(field["section"], {}).get(field["key"])
+        if leaf and leaf["evidence_label"] == "UNKNOWN":
+            return field["section"]
+
+    # All mandatory fields already resolved; default to the first section.
+    return next(iter(FIELD_REGISTRY.values()))["section"]
+
+
+def render_dossier_panel():
+    sections = st.session_state.dossier["sections"]
+    readiness = compute_readiness_score(_sections_for_readiness(sections))
+
+    st.subheader("لوحة الـ Dossier الحية")
+    st.metric("نسبة الجاهزية", f"{readiness['score_percentage']}%")
+    st.progress(readiness["score_percentage"] / 100)
+
+    last_updated = st.session_state.get("last_updated_field")
+    active_section = _active_section(sections, last_updated)
+
+    for section_name, fields in sections.items():
+        filled_count = sum(1 for leaf in fields.values() if leaf["evidence_label"] != "UNKNOWN")
+        total_count = len(fields)
+        with st.expander(
+            f"{section_name} ({filled_count}/{total_count})",
+            expanded=(section_name == active_section),
+        ):
+            for key, leaf in fields.items():
+                icon = _EVIDENCE_ICONS.get(leaf["evidence_label"], "❓")
+                label = _humanize_key(key)
+                if leaf["evidence_label"] == "UNKNOWN":
+                    line = f"{icon} {label}"
+                else:
+                    line = f"{icon} {label}: {leaf['value']}"
+
+                if f"{section_name}.{key}" == last_updated:
+                    st.success(line)
+                else:
+                    st.markdown(line)
+
+    for warning in st.session_state.get("field_update_warnings", []):
+        st.warning(f"تعذر تحديث الحقل في اللوحة الجانبية: {warning}")
+
+
+# ---------------------------------------------------------------------------
+# Session state
+# ---------------------------------------------------------------------------
+
 def _reset_session_state():
     st.session_state.stage = "awaiting_input"
     st.session_state.chat_history = [{"role": "assistant", "content": WELCOME_MESSAGE}]
@@ -85,6 +201,9 @@ def _reset_session_state():
     st.session_state.raw_input = None
     st.session_state.language = "ar"
     st.session_state.uploader_key = st.session_state.get("uploader_key", 0) + 1
+    st.session_state.dossier = build_dossier_skeleton()
+    st.session_state.last_updated_field = None
+    st.session_state.field_update_warnings = []
 
 
 def _init_session_state():
@@ -100,158 +219,186 @@ def _init_session_state():
         st.session_state.raw_input = None
         st.session_state.language = "ar"
         st.session_state.uploader_key = 0
+        st.session_state.last_updated_field = None
+        st.session_state.field_update_warnings = []
+
+    if "dossier" not in st.session_state:
+        st.session_state.dossier = build_dossier_skeleton()
 
 
-_init_session_state()
+# ---------------------------------------------------------------------------
+# App flow
+# ---------------------------------------------------------------------------
 
-st.title("Idea Dossier")
+def main():
+    st.set_page_config(page_title="Idea Dossier", page_icon="📋")
+    init_db()
 
-if st.session_state.stage == "awaiting_input":
-    _render_chat_history()
+    _init_session_state()
 
     with st.sidebar:
-        st.header("رفع فكرة كملف")
-        uploaded_file = st.file_uploader(
-            "ارفع ملف نصي (.txt أو .md)",
-            type=["txt", "md"],
-            key=f"uploader_{st.session_state.uploader_key}",
-        )
+        render_dossier_panel()
 
-    typed_input = st.chat_input("شاركني فكرتك...")
+    st.title("Idea Dossier")
 
-    raw_input = None
-    if uploaded_file is not None:
-        raw_input = uploaded_file.read().decode("utf-8")
-    elif typed_input:
-        raw_input = typed_input
+    if st.session_state.stage == "awaiting_input":
+        _render_chat_history()
 
-    if raw_input:
-        st.session_state.chat_history.append({"role": "user", "content": raw_input})
-        st.session_state.raw_input = raw_input
-        st.session_state.stage = "researching"
-        st.rerun()
-
-elif st.session_state.stage == "researching":
-    _render_chat_history()
-
-    with st.spinner("جاري البحث..."):
-        try:
-            research_result = run_research(st.session_state.raw_input, source_type="external")
-        except Exception as e:
-            st.session_state.chat_history.append({
-                "role": "assistant",
-                "content": f"حدث خطأ أثناء البحث، حاول مرة أخرى بصياغة مختلفة.\n\nتفاصيل الخطأ: {e}",
-            })
-            st.session_state.stage = "awaiting_input"
-            st.rerun()
-
-        st.session_state.dossier_partial = research_result["dossier_partial"]
-        st.session_state.gap_map = research_result["gap_map"]
-        st.session_state.dossier_id = _generate_dossier_id()
-        st.session_state.language = _detect_language(st.session_state.raw_input)
-        st.session_state.chat_history.append(
-            {"role": "assistant", "content": research_result["research_summary"]}
-        )
-
-        try:
-            first_question, interview_messages = start_interview(
-                st.session_state.gap_map, st.session_state.dossier_partial
+        with st.sidebar:
+            st.header("رفع فكرة كملف")
+            uploaded_file = st.file_uploader(
+                "ارفع ملف نصي (.txt أو .md)",
+                type=["txt", "md"],
+                key=f"uploader_{st.session_state.uploader_key}",
             )
-        except Exception as e:
-            st.session_state.chat_history.append({
-                "role": "assistant",
-                "content": f"تم البحث بنجاح، لكن حدث خطأ عند بدء المقابلة. حاول مرة أخرى.\n\nتفاصيل الخطأ: {e}",
-            })
-            st.session_state.stage = "awaiting_input"
+
+        typed_input = st.chat_input("شاركني فكرتك...")
+
+        raw_input = None
+        if uploaded_file is not None:
+            raw_input = uploaded_file.read().decode("utf-8")
+        elif typed_input:
+            raw_input = typed_input
+
+        if raw_input:
+            st.session_state.chat_history.append({"role": "user", "content": raw_input})
+            st.session_state.raw_input = raw_input
+            st.session_state.stage = "researching"
             st.rerun()
 
-        st.session_state.interview_messages = interview_messages
-        st.session_state.chat_history.append({"role": "assistant", "content": first_question})
-        st.session_state.stage = "interviewing"
+    elif st.session_state.stage == "researching":
+        _render_chat_history()
 
-    st.rerun()
-
-elif st.session_state.stage == "interviewing":
-    _render_chat_history()
-
-    answer = st.chat_input("اكتب إجابتك هنا...")
-
-    if answer:
-        st.session_state.chat_history.append({"role": "user", "content": answer})
-
-        try:
-            result = continue_interview(st.session_state.interview_messages, answer)
-        except Exception as e:
-            st.session_state.chat_history.append({
-                "role": "assistant",
-                "content": f"حدث خطأ أثناء معالجة إجابتك، حاول مرة أخرى.\n\nتفاصيل الخطأ: {e}",
-            })
-            st.rerun()
-
-        st.session_state.interview_messages = result["messages"]
-
-        if result["field_update"] is not None:
-            st.session_state.interview_updates.append(_flatten_field_update(result["field_update"]))
-
-        if result["next_question"] is not None:
-            st.session_state.chat_history.append({"role": "assistant", "content": result["next_question"]})
-
-        if result["next_action"] == "interview_complete":
+        with st.spinner("جاري البحث..."):
             try:
-                final_dossier = assemble_dossier(
-                    st.session_state.dossier_partial,
-                    st.session_state.interview_updates,
-                    st.session_state.dossier_id,
-                    source_type="external",
-                    language=st.session_state.language,
-                    research_gap_map=st.session_state.gap_map,
-                )
-                save_dossier_version(final_dossier)
+                research_result = run_research(st.session_state.raw_input, source_type="external")
             except Exception as e:
                 st.session_state.chat_history.append({
                     "role": "assistant",
-                    "content": f"حدث خطأ أثناء تجميع أو حفظ الـ Dossier.\n\nتفاصيل الخطأ: {e}",
+                    "content": f"حدث خطأ أثناء البحث، حاول مرة أخرى بصياغة مختلفة.\n\nتفاصيل الخطأ: {e}",
+                })
+                st.session_state.stage = "awaiting_input"
+                st.rerun()
+
+            st.session_state.dossier_partial = research_result["dossier_partial"]
+            st.session_state.gap_map = research_result["gap_map"]
+            st.session_state.dossier_id = _generate_dossier_id()
+            st.session_state.language = _detect_language(st.session_state.raw_input)
+            st.session_state.chat_history.append(
+                {"role": "assistant", "content": research_result["research_summary"]}
+            )
+
+            try:
+                first_question, interview_messages = start_interview(
+                    st.session_state.gap_map, st.session_state.dossier_partial
+                )
+            except Exception as e:
+                st.session_state.chat_history.append({
+                    "role": "assistant",
+                    "content": f"تم البحث بنجاح، لكن حدث خطأ عند بدء المقابلة. حاول مرة أخرى.\n\nتفاصيل الخطأ: {e}",
+                })
+                st.session_state.stage = "awaiting_input"
+                st.rerun()
+
+            st.session_state.interview_messages = interview_messages
+            st.session_state.chat_history.append({"role": "assistant", "content": first_question})
+            st.session_state.stage = "interviewing"
+
+        st.rerun()
+
+    elif st.session_state.stage == "interviewing":
+        _render_chat_history()
+
+        answer = st.chat_input("اكتب إجابتك هنا...")
+
+        if answer:
+            st.session_state.chat_history.append({"role": "user", "content": answer})
+
+            try:
+                result = continue_interview(st.session_state.interview_messages, answer)
+            except Exception as e:
+                st.session_state.chat_history.append({
+                    "role": "assistant",
+                    "content": f"حدث خطأ أثناء معالجة إجابتك، حاول مرة أخرى.\n\nتفاصيل الخطأ: {e}",
                 })
                 st.rerun()
 
-            st.session_state.final_dossier = final_dossier
-            readiness = final_dossier["readiness"]
-            st.session_state.chat_history.append({
-                "role": "assistant",
-                "content": (
-                    "تم! هذا هو Dossier الفكرة.\n\n"
-                    f"نسبة الجاهزية: {readiness['score_percentage']}% — الحالة: {final_dossier['status']}"
-                ),
-            })
-            st.session_state.stage = "complete"
+            st.session_state.interview_messages = result["messages"]
 
-        st.rerun()
+            if result["field_update"] is not None:
+                st.session_state.interview_updates.append(_flatten_field_update(result["field_update"]))
 
-elif st.session_state.stage == "complete":
-    _render_chat_history()
+                updated_path = _apply_field_update_to_dossier(st.session_state.dossier, result["field_update"])
+                if updated_path:
+                    st.session_state.last_updated_field = updated_path
+                else:
+                    st.session_state.setdefault("field_update_warnings", []).append(
+                        result["field_update"]["field_updated"]
+                    )
 
-    dossier = st.session_state.final_dossier
-    md_text = _dossier_to_markdown(dossier)
+            if result["next_question"] is not None:
+                st.session_state.chat_history.append({"role": "assistant", "content": result["next_question"]})
 
-    st.markdown("---")
-    st.markdown(md_text)
+            if result["next_action"] == "interview_complete":
+                try:
+                    final_dossier = assemble_dossier(
+                        st.session_state.dossier_partial,
+                        st.session_state.interview_updates,
+                        st.session_state.dossier_id,
+                        source_type="external",
+                        language=st.session_state.language,
+                        research_gap_map=st.session_state.gap_map,
+                    )
+                    save_dossier_version(final_dossier)
+                except Exception as e:
+                    st.session_state.chat_history.append({
+                        "role": "assistant",
+                        "content": f"حدث خطأ أثناء تجميع أو حفظ الـ Dossier.\n\nتفاصيل الخطأ: {e}",
+                    })
+                    st.rerun()
 
-    col1, col2 = st.columns(2)
-    with col1:
-        st.download_button(
-            "تحميل JSON",
-            data=json.dumps(dossier, ensure_ascii=False, indent=2).encode("utf-8"),
-            file_name=f"{dossier['dossier_id']}.json",
-            mime="application/json",
-        )
-    with col2:
-        st.download_button(
-            "تحميل Markdown",
-            data=md_text.encode("utf-8"),
-            file_name=f"{dossier['dossier_id']}.md",
-            mime="text/markdown",
-        )
+                st.session_state.final_dossier = final_dossier
+                readiness = final_dossier["readiness"]
+                st.session_state.chat_history.append({
+                    "role": "assistant",
+                    "content": (
+                        "تم! هذا هو Dossier الفكرة.\n\n"
+                        f"نسبة الجاهزية: {readiness['score_percentage']}% — الحالة: {final_dossier['status']}"
+                    ),
+                })
+                st.session_state.stage = "complete"
 
-    if st.button("فكرة جديدة"):
-        _reset_session_state()
-        st.rerun()
+            st.rerun()
+
+    elif st.session_state.stage == "complete":
+        _render_chat_history()
+
+        dossier = st.session_state.final_dossier
+        md_text = _dossier_to_markdown(dossier)
+
+        st.markdown("---")
+        st.markdown(md_text)
+
+        col1, col2 = st.columns(2)
+        with col1:
+            st.download_button(
+                "تحميل JSON",
+                data=json.dumps(dossier, ensure_ascii=False, indent=2).encode("utf-8"),
+                file_name=f"{dossier['dossier_id']}.json",
+                mime="application/json",
+            )
+        with col2:
+            st.download_button(
+                "تحميل Markdown",
+                data=md_text.encode("utf-8"),
+                file_name=f"{dossier['dossier_id']}.md",
+                mime="text/markdown",
+            )
+
+        if st.button("فكرة جديدة"):
+            _reset_session_state()
+            st.rerun()
+
+
+if __name__ == "__main__":
+    main()
