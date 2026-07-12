@@ -35,3 +35,4 @@ htmlcov/
 scripts/manual_test_output.txt
 scripts/manual_test_interview_only_output.txt
 scripts/manual_test_assembly_output.txt
+scripts/manual_test_storage_output.txt
