@@ -20,6 +20,9 @@ env/
 .idea/
 .vscode/
 
+# Local tool config (preview server launch config, not part of the app)
+.claude/launch.json
+
 # Testing / coverage
 .pytest_cache/
 .coverage

@@ -123,54 +123,59 @@ def _extract_text(response):
 
 
 def _extract_leading_json(text):
-    """Find the first balanced JSON object in text, respecting quoted strings.
+    """Find a Mode-2 JSON object (one with a "field_updated" key) anywhere
+    near the start of text, respecting quoted strings and optional markdown
+    fences. Tries every "{" position, not just the first — defensive against
+    the model prefixing the JSON with acknowledgement text that happens to
+    contain a brace, or wrapping it in a fence.
 
-    Returns (parsed_dict, remainder_text) if a valid JSON object is found,
-    otherwise (None, text).
+    Returns (parsed_dict, remainder_text) if found, otherwise (None, text).
     """
     start = text.find("{")
-    if start == -1:
-        return None, text
+    while start != -1:
+        depth = 0
+        in_string = False
+        escape = False
+        end = None
+        for i in range(start, len(text)):
+            ch = text[i]
+            if in_string:
+                if escape:
+                    escape = False
+                elif ch == "\\":
+                    escape = True
+                elif ch == '"':
+                    in_string = False
+            else:
+                if ch == '"':
+                    in_string = True
+                elif ch == "{":
+                    depth += 1
+                elif ch == "}":
+                    depth -= 1
+                    if depth == 0:
+                        end = i
+                        break
 
-    depth = 0
-    in_string = False
-    escape = False
-    end = None
-    for i in range(start, len(text)):
-        ch = text[i]
-        if in_string:
-            if escape:
-                escape = False
-            elif ch == "\\":
-                escape = True
-            elif ch == '"':
-                in_string = False
-        else:
-            if ch == '"':
-                in_string = True
-            elif ch == "{":
-                depth += 1
-            elif ch == "}":
-                depth -= 1
-                if depth == 0:
-                    end = i
-                    break
+        if end is not None:
+            candidate = text[start:end + 1]
+            try:
+                parsed = json.loads(candidate)
+            except json.JSONDecodeError:
+                parsed = None
 
-    if end is None:
-        return None, text
+            if parsed is not None and "field_updated" in parsed:
+                # The model sometimes wraps the JSON in a ```json ... ```
+                # fence despite the prompt not asking for one; strip a
+                # leftover closing fence marker so it doesn't leak into
+                # the next question text.
+                remainder = text[end + 1:].strip()
+                remainder = re.sub(r"^```\s*", "", remainder).strip()
+                return parsed, remainder
 
-    candidate = text[start:end + 1]
-    try:
-        parsed = json.loads(candidate)
-    except json.JSONDecodeError:
-        return None, text
+        start = text.find("{", start + 1)
 
-    # The model sometimes wraps the JSON in a ```json ... ``` fence despite
-    # the prompt not asking for one; strip a leftover closing fence marker
-    # so it doesn't leak into the next question text.
-    remainder = text[end + 1:].strip()
-    remainder = re.sub(r"^```\s*", "", remainder).strip()
-    return parsed, remainder
+    return None, text
 
 
 def start_interview(gap_map: dict, dossier_partial: dict) -> tuple:
