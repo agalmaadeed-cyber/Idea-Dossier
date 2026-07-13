@@ -1,7 +1,8 @@
 # Idea Dossier — Project Reference Document
 **For use in MVP Studio project conversations**
 **Last updated:** July 2026
-**Status:** Lite phase complete · Iterate phase goals #2 and #3 complete · Goal #1 (Supabase) pending
+**Status:** Lite phase complete · Iterate phase goals #2 and #3 complete, deployed live on Streamlit Cloud · Goal #1 (Supabase) pending
+**Live URL:** https://idea-dossier-4alpcwu8atwozu6rmgsxjf.streamlit.app/
 
 ---
 
@@ -136,6 +137,7 @@ Extraction rule: uses `After Field Verification` block if present in the report,
 | Research Agent restated a pre-filled field despite prompt instruction (delta-only violated) | Live API test, reproduced twice | `_strip_prefilled_overlap()` — deterministic code-level filter |
 | `assemble_dossier()` hardcoded `source_type="external"` regardless of actual entry path | Manual end-to-end test inspecting the final persisted JSON (`DS-74843AED`) | Fixed to use `st.session_state.entry_path` |
 | Rich UH `source_metadata` computed correctly but never passed into `assemble_dossier()`, silently discarded | Same manual end-to-end inspection | `assemble_dossier()` now accepts an optional pre-built `source` dict |
+| Interview Agent's JSON `field_update` silently failed to parse (invisible Unicode bidi/format characters near RTL text broke `json.loads()`), leaking the raw JSON into the chat and silently losing the founder's answer — the field then appeared as a normal `EMPTY` gap, indistinguishable from an intentional skip | First live run on Streamlit Cloud (production), non-reproduced single occurrence | Two-part fix: (1) preventive — strip the full Unicode `Cf` (format control) category from model replies before JSON parsing; (2) defensive — never display raw unparsed text to the founder; genuine parse failures (detected via a `"field_updated"` substring check) return a safe fallback question, force `ask_followup`, and label the field `PARSE_FAILURE` in the gap map, distinct from `EMPTY`. Confirmed `readiness.py`'s mandatory-field gating is unaffected (checks key presence in `sections`, not the gap reason string) |
 
 **Key lesson:** every one of these bugs was invisible to isolated unit/component tests and only surfaced via full live end-to-end walkthroughs. This is now a standing practice for this project — a component being individually correct does not guarantee the integrated flow is correct.
 
