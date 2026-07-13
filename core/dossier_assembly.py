@@ -13,7 +13,8 @@ from core.readiness import compute_readiness_score
 
 def assemble_dossier(dossier_partial: dict, interview_updates: list, dossier_id: str,
                       source_type: str, language: str, version: int = 1,
-                      research_gap_map: dict = None, source: dict = None) -> dict:
+                      research_gap_map: dict = None, source: dict = None,
+                      parse_failed_fields: set = None) -> dict:
     """Assemble the full Dossier from Research Agent's partial result plus
     the interview's field updates.
 
@@ -29,9 +30,17 @@ def assemble_dossier(dossier_partial: dict, interview_updates: list, dossier_id:
     source: pre-built source metadata dict (e.g. uh_mapper's richer
     source_metadata for Unicorn Hunter entries) used as-is in place of
     the {"type": source_type, "reference": None} default.
+
+    parse_failed_fields: "section.key" paths where continue_interview() saw
+    the model attempt a field update but the JSON genuinely failed to parse
+    (interview_agent.py's parse_failure case). Still unresolved fields here
+    are labeled distinctly from a normal EMPTY gap, since the founder DID
+    answer — the app failed to record it — rather than the field being
+    intentionally skipped or never reached.
     """
     sections = copy.deepcopy(dossier_partial)
     research_gap_map = research_gap_map or {}
+    parse_failed_fields = parse_failed_fields or set()
 
     for update in interview_updates:
         field_code = update.get("field_code")
@@ -58,7 +67,10 @@ def assemble_dossier(dossier_partial: dict, interview_updates: list, dossier_id:
         if key in sections.get(section, {}):
             continue
         field_path = f"{section}.{key}"
-        gap_map[field_code] = research_gap_map.get(field_path, "EMPTY — not resolved during interview")
+        if field_path in parse_failed_fields:
+            gap_map[field_code] = "PARSE_FAILURE — founder answered but the response failed to parse; needs re-asking"
+        else:
+            gap_map[field_code] = research_gap_map.get(field_path, "EMPTY — not resolved during interview")
 
     readiness = compute_readiness_score(sections)
 

@@ -271,6 +271,7 @@ def _reset_session_state():
     st.session_state.dossier = build_dossier_skeleton()
     st.session_state.last_updated_field = None
     st.session_state.field_update_warnings = []
+    st.session_state.parse_failed_fields = set()
 
 
 def _init_session_state():
@@ -289,6 +290,7 @@ def _init_session_state():
         st.session_state.uploader_key = 0
         st.session_state.last_updated_field = None
         st.session_state.field_update_warnings = []
+        st.session_state.parse_failed_fields = set()
 
     if "dossier" not in st.session_state:
         st.session_state.dossier = build_dossier_skeleton()
@@ -471,6 +473,7 @@ def main():
 
             if result["field_update"] is not None:
                 st.session_state.interview_updates.append(_flatten_field_update(result["field_update"]))
+                st.session_state.parse_failed_fields.discard(result["field_update"]["field_updated"])
 
                 updated_path = _apply_field_update_to_dossier(st.session_state.dossier, result["field_update"])
                 if updated_path:
@@ -479,6 +482,8 @@ def main():
                     st.session_state.setdefault("field_update_warnings", []).append(
                         result["field_update"]["field_updated"]
                     )
+            elif result.get("parse_failure") and result.get("failed_field_path"):
+                st.session_state.parse_failed_fields.add(result["failed_field_path"])
 
             if result["next_question"] is not None:
                 st.session_state.chat_history.append({"role": "assistant", "content": result["next_question"]})
@@ -493,6 +498,7 @@ def main():
                         language=st.session_state.language,
                         research_gap_map=st.session_state.gap_map,
                         source=st.session_state.dossier.get("source"),
+                        parse_failed_fields=st.session_state.parse_failed_fields,
                     )
                     save_dossier_version(final_dossier)
                 except Exception as e:

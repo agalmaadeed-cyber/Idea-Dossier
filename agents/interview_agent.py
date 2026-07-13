@@ -2,6 +2,7 @@
 
 import json
 import re
+import unicodedata
 from datetime import datetime, timezone
 
 from agents import call_agent
@@ -117,9 +118,39 @@ re-ask."""
 
 _REVERSE_LOOKUP = {(f["section"], f["key"]): code for code, f in FIELD_REGISTRY.items()}
 
+_ARABIC_RE = re.compile(r"[؀-ۿ]")
+_FIELD_PATH_RE = re.compile(r'"field_updated"\s*:\s*"([^"]*)"')
+
+_PARSE_FAILURE_MESSAGE_AR = "حدث خلل تقني في معالجة إجابتك الأخيرة، هل يمكنك إعادة صياغتها؟"
+_PARSE_FAILURE_MESSAGE_EN = "There was a technical glitch processing your last answer — could you rephrase it?"
+
 
 def _extract_text(response):
     return "".join(block.text for block in response.content if getattr(block, "type", None) == "text")
+
+
+def _strip_invisible_controls(text: str) -> str:
+    """Strip Unicode "Cf" (format) category characters: bidi/directional
+    controls (LRM, RLM, LRE/RLE/PDF/LRO/RLO, LRI/RLI/FSI/PDI), zero-width
+    joiners, etc. These have no visual representation but can land between
+    JSON tokens — not inside quoted string values — when the model mixes
+    RTL text (e.g. Arabic) with JSON syntax, which breaks json.loads() even
+    though the text looks perfectly valid to a human reader. Using the
+    Unicode category (rather than an ad-hoc codepoint list) covers any
+    control character in this class, not just the ones observed so far."""
+    return "".join(ch for ch in text if unicodedata.category(ch) != "Cf")
+
+
+def _extract_attempted_field_path(text: str):
+    """Best-effort recovery of the field path the model was trying to report
+    on, even when the surrounding JSON failed to parse. Used only to label a
+    genuine parse-failure gap; never used to trust the value itself."""
+    match = _FIELD_PATH_RE.search(text)
+    return match.group(1) if match else None
+
+
+def _parse_failure_message(founder_answer: str) -> str:
+    return _PARSE_FAILURE_MESSAGE_AR if _ARABIC_RE.search(founder_answer) else _PARSE_FAILURE_MESSAGE_EN
 
 
 def _extract_leading_json(text):
@@ -200,7 +231,7 @@ def continue_interview(messages: list, founder_answer: str) -> dict:
     messages = messages + [{"role": "user", "content": founder_answer}]
 
     response = call_agent(system_prompt=INTERVIEW_AGENT_SYSTEM_PROMPT, messages=messages)
-    reply_text = _extract_text(response)
+    reply_text = _strip_invisible_controls(_extract_text(response))
 
     messages = messages + [{"role": "assistant", "content": reply_text}]
 
@@ -209,6 +240,8 @@ def continue_interview(messages: list, founder_answer: str) -> dict:
     field_update = None
     next_action = "ask_next_question"
     next_question = None
+    parse_failure = False
+    failed_field_path = None
 
     if parsed is not None and "field_updated" in parsed:
         field_path = parsed["field_updated"]
@@ -224,6 +257,16 @@ def continue_interview(messages: list, founder_answer: str) -> dict:
         field_update = {"field_updated": field_path, "value": value}
         next_action = parsed.get("next_action", "ask_next_question")
         next_question = remainder if remainder and next_action != "interview_complete" else None
+    elif '"field_updated"' in reply_text:
+        # The model attempted a field update, but the JSON genuinely failed
+        # to parse even after stripping invisible bidi/format characters.
+        # Never surface this (possibly still-corrupted) raw text to the
+        # founder, and never trust the model's stated next_action — force a
+        # retry of the same gap instead of risking a silent skip.
+        parse_failure = True
+        failed_field_path = _extract_attempted_field_path(reply_text)
+        next_action = "ask_followup"
+        next_question = _parse_failure_message(founder_answer)
     else:
         next_question = reply_text.strip() or None
 
@@ -232,4 +275,6 @@ def continue_interview(messages: list, founder_answer: str) -> dict:
         "next_question": next_question,
         "next_action": next_action,
         "messages": messages,
+        "parse_failure": parse_failure,
+        "failed_field_path": failed_field_path,
     }
