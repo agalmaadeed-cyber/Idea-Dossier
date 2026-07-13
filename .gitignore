@@ -41,3 +41,5 @@ scripts/manual_test_assembly_output.txt
 scripts/manual_test_storage_output.txt
 scripts/manual_test_side_panel_output.txt
 scripts/manual_test_uh_mapper_output.txt
+scripts/manual_test_uh_entry_path_output.txt
+scripts/manual_test_uh_research_delta_output.txt
