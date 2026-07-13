@@ -1,9 +1,9 @@
 """Idea Dossier — Streamlit chat UI (Lite scope + live side panel, Iterate).
 
 Chat-only flow: raw idea -> Research Agent -> Interview Agent -> assembled
-Dossier, persisted via storage/db.py. source_type is always "external" in
-this phase. A live sidebar panel mirrors the Dossier skeleton as the
-interview fills it in.
+Dossier, persisted via storage/ (Supabase when configured, else local SQLite
+— see storage/__init__.py). source_type is always "external" in this phase.
+A live sidebar panel mirrors the Dossier skeleton as the interview fills it in.
 """
 
 import copy
@@ -19,7 +19,7 @@ from core.dossier_assembly import assemble_dossier
 from core.field_registry import FIELD_REGISTRY, MANDATORY_FIELDS
 from core.readiness import compute_readiness_score
 from core.uh_mapper import parse_uh_report
-from storage.db import init_db, save_dossier_version
+from storage import init_db, save_dossier_version
 
 WELCOME_MESSAGE = "شاركني فكرتك أو ارفع ملفاً من الشريط الجانبي."
 _ARABIC_RE = re.compile(r"[؀-ۿ]")
