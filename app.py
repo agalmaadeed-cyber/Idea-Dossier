@@ -6,6 +6,7 @@ this phase. A live sidebar panel mirrors the Dossier skeleton as the
 interview fills it in.
 """
 
+import copy
 import json
 import re
 import uuid
@@ -17,6 +18,7 @@ from agents.interview_agent import start_interview, continue_interview
 from core.dossier_assembly import assemble_dossier
 from core.field_registry import FIELD_REGISTRY, MANDATORY_FIELDS
 from core.readiness import compute_readiness_score
+from core.uh_mapper import parse_uh_report
 from storage.db import init_db, save_dossier_version
 
 WELCOME_MESSAGE = "شاركني فكرتك أو ارفع ملفاً من الشريط الجانبي."
@@ -159,6 +161,30 @@ def merge_research_into_skeleton(dossier_partial: dict) -> list:
     return merged
 
 
+def _flatten_dossier_partial_to_values(dossier_partial: dict) -> dict:
+    """Flatten a dossier_partial dict (section -> {key -> leaf}) into a flat
+    {"section.key": value} dict — the shape Research Agent's PRE-FILLED
+    FIELDS prompt section expects for existing_partial. Only the value is
+    needed; Research Agent doesn't need evidence_label/sources/etc. for
+    fields it must not re-derive."""
+    flat = {}
+    for section, fields in dossier_partial.items():
+        for key, leaf in fields.items():
+            flat[f"{section}.{key}"] = leaf["value"]
+    return flat
+
+
+def _merge_dossier_partials(base: dict, additional: dict) -> dict:
+    """Combine two dossier_partial dicts (section -> {key: leaf}) into one,
+    with `additional`'s fields taking precedence on any overlapping key.
+    Used to combine uh_mapper's fields with Research Agent's delta fields
+    into the single dossier_partial assemble_dossier() expects later."""
+    combined = copy.deepcopy(base)
+    for section, fields in additional.items():
+        combined.setdefault(section, {}).update(fields)
+    return combined
+
+
 def _sections_for_readiness(sections: dict) -> dict:
     """compute_readiness_score() determines a field's presence by key
     membership, but the live skeleton keeps every field present as an
@@ -239,6 +265,7 @@ def _reset_session_state():
     st.session_state.dossier_id = None
     st.session_state.final_dossier = None
     st.session_state.raw_input = None
+    st.session_state.entry_path = None
     st.session_state.language = "ar"
     st.session_state.uploader_key = st.session_state.get("uploader_key", 0) + 1
     st.session_state.dossier = build_dossier_skeleton()
@@ -257,6 +284,7 @@ def _init_session_state():
         st.session_state.dossier_id = None
         st.session_state.final_dossier = None
         st.session_state.raw_input = None
+        st.session_state.entry_path = None
         st.session_state.language = "ar"
         st.session_state.uploader_key = 0
         st.session_state.last_updated_field = None
@@ -285,33 +313,105 @@ def main():
         _render_chat_history()
 
         with st.sidebar:
-            st.header("رفع فكرة كملف")
-            uploaded_file = st.file_uploader(
-                "ارفع ملف نصي (.txt أو .md)",
-                type=["txt", "md"],
-                key=f"uploader_{st.session_state.uploader_key}",
+            st.header("طريقة البدء")
+            input_mode = st.radio(
+                "اختر طريقة البدء",
+                ["فكرة خارجية", "تقرير Unicorn Hunter"],
+                key="input_mode",
             )
 
-        typed_input = st.chat_input("شاركني فكرتك...")
+            if input_mode == "فكرة خارجية":
+                st.header("رفع فكرة كملف")
+                uploaded_file = st.file_uploader(
+                    "ارفع ملف نصي (.txt أو .md)",
+                    type=["txt", "md"],
+                    key=f"uploader_{st.session_state.uploader_key}",
+                )
+                uh_uploaded_file = None
+                uh_pasted_text = ""
+                uh_submit = False
+            else:
+                uploaded_file = None
+                st.header("رفع تقرير Unicorn Hunter")
+                uh_uploaded_file = st.file_uploader(
+                    "ارفع ملف تقرير Unicorn Hunter (.md)",
+                    type=["md"],
+                    key=f"uh_uploader_{st.session_state.uploader_key}",
+                )
+                uh_pasted_text = st.text_area(
+                    "أو الصق نص التقرير هنا مباشرةً",
+                    key=f"uh_paste_{st.session_state.uploader_key}",
+                )
+                uh_submit = st.button("ابدأ من تقرير Unicorn Hunter")
 
-        raw_input = None
-        if uploaded_file is not None:
-            raw_input = uploaded_file.read().decode("utf-8")
-        elif typed_input:
-            raw_input = typed_input
+        if input_mode == "فكرة خارجية":
+            typed_input = st.chat_input("شاركني فكرتك...")
 
-        if raw_input:
-            st.session_state.chat_history.append({"role": "user", "content": raw_input})
-            st.session_state.raw_input = raw_input
-            st.session_state.stage = "researching"
-            st.rerun()
+            raw_input = None
+            if uploaded_file is not None:
+                raw_input = uploaded_file.read().decode("utf-8")
+            elif typed_input:
+                raw_input = typed_input
+
+            if raw_input:
+                st.session_state.chat_history.append({"role": "user", "content": raw_input})
+                st.session_state.raw_input = raw_input
+                st.session_state.entry_path = "external"
+                st.session_state.stage = "researching"
+                st.rerun()
+        else:
+            raw_uh_markdown = None
+            if uh_uploaded_file is not None:
+                raw_uh_markdown = uh_uploaded_file.read().decode("utf-8")
+            elif uh_submit and uh_pasted_text.strip():
+                raw_uh_markdown = uh_pasted_text
+
+            if raw_uh_markdown:
+                st.session_state.chat_history.append({
+                    "role": "user",
+                    "content": "📄 تم رفع تقرير Unicorn Hunter.",
+                })
+                st.session_state.raw_input = raw_uh_markdown
+                st.session_state.entry_path = "unicorn_hunter"
+                st.session_state.stage = "researching"
+                st.rerun()
 
     elif st.session_state.stage == "researching":
         _render_chat_history()
 
         with st.spinner("جاري البحث..."):
+            pre_filled_dossier_partial = {}
+
+            if st.session_state.entry_path == "unicorn_hunter":
+                try:
+                    uh_result = parse_uh_report(st.session_state.raw_input)
+                except Exception as e:
+                    st.session_state.chat_history.append({
+                        "role": "assistant",
+                        "content": f"حدث خطأ أثناء تحليل تقرير Unicorn Hunter، حاول مرة أخرى.\n\nتفاصيل الخطأ: {e}",
+                    })
+                    st.session_state.stage = "awaiting_input"
+                    st.rerun()
+
+                pre_filled_dossier_partial = uh_result["dossier_partial"]
+                merge_research_into_skeleton(pre_filled_dossier_partial)
+                st.session_state.dossier["source"] = uh_result["source_metadata"]
+
+                if uh_result["parse_warnings"]:
+                    st.session_state.chat_history.append({
+                        "role": "assistant",
+                        "content": (
+                            "ملاحظة: لم يتم العثور على بعض الحقول المتوقعة في تقرير Unicorn Hunter:\n"
+                            + "\n".join(f"- {w}" for w in uh_result["parse_warnings"])
+                        ),
+                    })
+
             try:
-                research_result = run_research(st.session_state.raw_input, source_type="external")
+                research_result = run_research(
+                    st.session_state.raw_input,
+                    source_type="unicorn_hunter" if st.session_state.entry_path == "unicorn_hunter" else "external",
+                    existing_partial=_flatten_dossier_partial_to_values(pre_filled_dossier_partial) or None,
+                )
             except Exception as e:
                 st.session_state.chat_history.append({
                     "role": "assistant",
@@ -320,7 +420,9 @@ def main():
                 st.session_state.stage = "awaiting_input"
                 st.rerun()
 
-            st.session_state.dossier_partial = research_result["dossier_partial"]
+            st.session_state.dossier_partial = _merge_dossier_partials(
+                pre_filled_dossier_partial, research_result["dossier_partial"]
+            )
             st.session_state.gap_map = research_result["gap_map"]
             st.session_state.dossier_id = _generate_dossier_id()
             st.session_state.language = _detect_language(st.session_state.raw_input)
@@ -328,7 +430,7 @@ def main():
                 {"role": "assistant", "content": research_result["research_summary"]}
             )
 
-            merge_research_into_skeleton(st.session_state.dossier_partial)
+            merge_research_into_skeleton(research_result["dossier_partial"])
 
             try:
                 first_question, interview_messages = start_interview(

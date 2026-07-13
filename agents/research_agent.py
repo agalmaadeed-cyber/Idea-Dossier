@@ -21,23 +21,29 @@ Your job covers three internal steps in a single pass:
 
 INPUT
 You will receive one of two input types:
-- source_type = "unicorn_hunter": a full Opportunity Report text, following
-  Unicorn Hunter's known structure (Problem Card, Solutions table,
-  Evaluation report).
+- source_type = "unicorn_hunter": raw text from a Unicorn Hunter Opportunity
+  Report. A deterministic parser (core/uh_mapper.py) has already extracted
+  certain fields from this report before you ever see it — see PRE-FILLED
+  FIELDS below for how to handle those. Use the rest of the raw text only
+  as background context for researching whatever is NOT already pre-filled.
 - source_type = "external": free-form text — a founder's note, a partner's
   proposal, or any unstructured idea description.
-
-If source_type = "unicorn_hunter", apply this mapping before anything else:
-- Problem Card sections -> Opportunity Definition (A1-A5) and Customer &
-  Market (B1-B4)
-- Report "Proposed Solution" + solutions table -> Solution (C1-C5)
-- Report "Revenue Model" -> Business Model (D1-D6, partial)
-- Report "Risks" -> Success Definition (F3)
-- verification_rounds history -> Success Definition (F4, prior evidence)
 
 If source_type = "external", extract whatever is explicitly present into the
 same six sections. Do not force-fit vague text into a field — leave it EMPTY
 if the input does not address it.
+
+PRE-FILLED FIELDS (when provided)
+If the initial message includes a pre_filled_fields JSON block, those fields are
+already resolved with certainty from a prior deterministic source. You MUST:
+- Treat every field listed there as FILLED for gap analysis purposes — never include
+  it in your gap_map output, regardless of what you find in raw_input.
+- Never restate, rephrase, or produce a competing value for any of those fields in
+  your dossier_partial output.
+- Focus your available web_search calls (max_uses: 5) exclusively on fields NOT in
+  pre_filled_fields.
+Your dossier_partial output in this mode must contain ONLY newly-filled fields —
+delta-only, not a full echo of pre_filled_fields plus new fields.
 
 GAP ANALYSIS RULE
 For every one of the Dossier's fields (see the full field list below),
@@ -212,13 +218,44 @@ def _inject_metadata(dossier_partial):
             leaf["filled_at"] = now
 
 
-def run_research(raw_input: str, source_type: str = "external") -> dict:
+def _strip_prefilled_overlap(dossier_partial: dict, existing_partial: dict) -> dict:
+    """Remove any section/key from dossier_partial that is also present in
+    existing_partial, guaranteeing delta-only output regardless of what the
+    model actually returned. The prompt asks the model not to restate
+    pre-filled fields, but that's not a structural guarantee — this is the
+    same guard-clause philosophy as app.py's merge_research_into_skeleton
+    and _apply_field_update_to_dossier: never trust the model alone for
+    structural correctness.
+
+    existing_partial: flat {"section.key": value} dict, the same shape
+    app.py's _flatten_dossier_partial_to_values() produces.
+
+    Returns a new dict; does not mutate the input.
+    """
+    overlap_paths = set(existing_partial.keys())
+    filtered = {}
+    for section, fields in dossier_partial.items():
+        kept = {key: leaf for key, leaf in fields.items() if f"{section}.{key}" not in overlap_paths}
+        if kept:
+            filtered[section] = kept
+    return filtered
+
+
+def run_research(raw_input: str, source_type: str = "external", existing_partial: dict = None) -> dict:
     """Call the Research Agent once and return a parsed, metadata-enriched result.
 
     Uses the Anthropic web_search tool (type: web_search_20250305,
     name: web_search, max_uses: 5) — same pattern as Unicorn Hunter's Agent 1.
+
+    existing_partial: optional flat {"section.key": value} dict of fields
+    already resolved by a prior deterministic source (e.g. core/uh_mapper.py).
+    When provided, injected into the initial message as pre_filled_fields —
+    the returned dossier_partial will then contain only newly-filled fields
+    (delta-only), never a restatement of existing_partial.
     """
     user_message = f"source_type: {source_type}\n\nRAW INPUT:\n{raw_input}"
+    if existing_partial:
+        user_message += f"\n\npre_filled_fields:\n{json.dumps(existing_partial, ensure_ascii=False)}"
 
     response = call_agent(
         system_prompt=RESEARCH_AGENT_SYSTEM_PROMPT,
@@ -239,8 +276,16 @@ def run_research(raw_input: str, source_type: str = "external") -> dict:
     dossier_partial = parsed.get("dossier_partial", {})
     _inject_metadata(dossier_partial)
 
+    stripped_overlap_fields = []
+    if existing_partial:
+        before_paths = {f"{section}.{key}" for section, fields in dossier_partial.items() for key in fields}
+        dossier_partial = _strip_prefilled_overlap(dossier_partial, existing_partial)
+        after_paths = {f"{section}.{key}" for section, fields in dossier_partial.items() for key in fields}
+        stripped_overlap_fields = sorted(before_paths - after_paths)
+
     return {
         "dossier_partial": dossier_partial,
         "gap_map": parsed.get("gap_map", {}),
         "research_summary": parsed.get("research_summary", ""),
+        "stripped_overlap_fields": stripped_overlap_fields,
     }
