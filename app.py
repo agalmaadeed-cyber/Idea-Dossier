@@ -489,9 +489,10 @@ def main():
                         st.session_state.dossier_partial,
                         st.session_state.interview_updates,
                         st.session_state.dossier_id,
-                        source_type="external",
+                        source_type=st.session_state.entry_path,
                         language=st.session_state.language,
                         research_gap_map=st.session_state.gap_map,
+                        source=st.session_state.dossier.get("source"),
                     )
                     save_dossier_version(final_dossier)
                 except Exception as e:

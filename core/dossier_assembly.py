@@ -13,7 +13,7 @@ from core.readiness import compute_readiness_score
 
 def assemble_dossier(dossier_partial: dict, interview_updates: list, dossier_id: str,
                       source_type: str, language: str, version: int = 1,
-                      research_gap_map: dict = None) -> dict:
+                      research_gap_map: dict = None, source: dict = None) -> dict:
     """Assemble the full Dossier from Research Agent's partial result plus
     the interview's field updates.
 
@@ -25,6 +25,10 @@ def assemble_dossier(dossier_partial: dict, interview_updates: list, dossier_id:
     research_gap_map: Research Agent's original gap_map (keyed by
     "section.key", as it comes out of run_research()), used to carry over
     its reasons for fields the interview also left unresolved.
+
+    source: pre-built source metadata dict (e.g. uh_mapper's richer
+    source_metadata for Unicorn Hunter entries) used as-is in place of
+    the {"type": source_type, "reference": None} default.
     """
     sections = copy.deepcopy(dossier_partial)
     research_gap_map = research_gap_map or {}
@@ -65,7 +69,7 @@ def assemble_dossier(dossier_partial: dict, interview_updates: list, dossier_id:
         "version": version,
         "created_at": now,
         "updated_at": now,
-        "source": {"type": source_type, "reference": None},
+        "source": source if source is not None else {"type": source_type, "reference": None},
         "language": language,
         "sections": sections,
         "gap_map": gap_map,
