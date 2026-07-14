@@ -1,7 +1,7 @@
 # Idea Dossier — Project Reference Document
 **For use in MVP Studio project conversations**
 **Last updated:** July 2026
-**Status:** Lite phase complete · Iterate phase goals #2 and #3 complete, deployed live on Streamlit Cloud · Goal #1 (Supabase) pending
+**Status:** Lite phase complete · All three Iterate-phase goals complete (Live Side Panel, UH Real Source Mapping, Supabase migration) · Live on Streamlit Cloud with Supabase as primary storage
 **Live URL:** https://idea-dossier-4alpcwu8atwozu6rmgsxjf.streamlit.app/
 
 ---
@@ -140,6 +140,26 @@ Extraction rule: uses `After Field Verification` block if present in the report,
 | Interview Agent's JSON `field_update` silently failed to parse (invisible Unicode bidi/format characters near RTL text broke `json.loads()`), leaking the raw JSON into the chat and silently losing the founder's answer — the field then appeared as a normal `EMPTY` gap, indistinguishable from an intentional skip | First live run on Streamlit Cloud (production), non-reproduced single occurrence | Two-part fix: (1) preventive — strip the full Unicode `Cf` (format control) category from model replies before JSON parsing; (2) defensive — never display raw unparsed text to the founder; genuine parse failures (detected via a `"field_updated"` substring check) return a safe fallback question, force `ask_followup`, and label the field `PARSE_FAILURE` in the gap map, distinct from `EMPTY`. Confirmed `readiness.py`'s mandatory-field gating is unaffected (checks key presence in `sections`, not the gap reason string) |
 
 **Key lesson:** every one of these bugs was invisible to isolated unit/component tests and only surfaced via full live end-to-end walkthroughs. This is now a standing practice for this project — a component being individually correct does not guarantee the integrated flow is correct.
+
+---
+
+## 7a. Decision 7 — Supabase Dual Backend
+
+`storage/supabase_db.py` implements the exact same four function signatures as `storage/db.py` (`init_db`, `save_dossier_version`, `get_latest_version`, `get_version`, `list_dossiers`), including an identical error contract (raises the same `ValueError` message on a duplicate `(dossier_id, version)`). A selector in `storage/__init__.py` checks for `SUPABASE_URL` + `SUPABASE_SERVICE_ROLE_KEY` in `st.secrets` and transparently exposes the matching backend under common names — `app.py` imports from `storage` (not `storage.db` directly) and needs zero other changes. This mirrors Unicorn Hunter's proven dual-backend pattern exactly, keeping local development fully independent of any cloud dependency.
+
+Key implementation choices: `full_json` is stored as native `JSONB` (not `TEXT`), and the Supabase Python client's dict-passthrough is used directly — no manual `json.dumps()`/`json.loads()` needed, confirmed live. The `service_role` key is used (not `anon`), with RLS intentionally left disabled — correct for a single-tenant, fully server-side Streamlit app with no client-side database access; RLS would only become necessary if the product ever became multi-tenant.
+
+**Incident during setup:** Supabase's newer key-naming scheme (`sb_publishable_...` / `sb_secret_...`, replacing the legacy `anon`/`service_role` JWT labels) caused an initial mix-up — the publishable key was used by mistake, correctly triggering an RLS rejection on insert (not a bug; RLS did exactly what it should for a non-privileged key). Fixed by using the actual `sb_secret_...` key. Worth remembering for any future Supabase project setup in MVP Studio.
+
+## 7b. Final End-to-End Verification (July 2026)
+
+A complete real run — Unicorn Hunter report upload → `uh_mapper` → Research Agent (delta-only) → Interview Agent → `interview_complete` → save — was executed against the live production app on Streamlit Cloud, with Supabase as the active backend. Result: `DS-0FE02838`, 100% readiness (46/46), zero gaps, `mandatory_passed: true`. Confirmed:
+- `source` object fully populated with all UH metadata (idea name, sector, score, decision, next step) — the source-metadata-loss bug fix holds in production.
+- All 11 `uh_mapper`-filled fields preserved unchanged alongside 14+ `research_agent` delta fields with zero overlap — the delta-only guard holds in production.
+- No raw JSON leakage in any interview turn — the bidi-Unicode parse-failure fix holds in production.
+- The row was confirmed present in Supabase's `dossiers` table via the Table Editor — the migration holds in production, not just in the local live test.
+
+This closes all three Iterate-phase goals with real, live, end-to-end confirmation — not just isolated component tests.
 
 ---
 
