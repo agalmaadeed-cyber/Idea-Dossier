@@ -209,10 +209,49 @@ def _extract_leading_json(text):
     return None, text
 
 
+def _enrich_gap_map_for_interview(gap_map: dict, dossier_partial: dict) -> dict:
+    """Deterministic, code-level enrichment of the gap_map sent to the
+    Interview Agent's own initial prompt context (a.7 fix, cross-project
+    evaluation, 2026-07-23). Previously the agent had to independently
+    cross-reference two separate JSON blobs -- gap_map's short reason
+    string, and dossier_partial's actual PARTIAL value -- entirely on its
+    own initiative, per a soft prompt instruction ("If a field is PARTIAL
+    with a research estimate, mention that estimate...") with zero
+    code-level enforcement; compliance was observed to be inconsistent
+    across a real multi-gap interview (cross-project evaluation session,
+    2026-07-22).
+
+    Now, for every gap_map entry whose field already has a real value in
+    dossier_partial (a genuine PARTIAL -- a true EMPTY field correctly
+    has nothing to reference and is left untouched), the actual research
+    value and evidence_label are appended directly into the same string
+    the agent is told to read first, co-locating the two pieces of
+    information it needs instead of trusting it to correctly look them
+    up across two separate data structures for every gap, every turn.
+
+    Returns a new dict -- never mutates the caller's gap_map, which is
+    also used unmodified elsewhere (app.py's own gap-list UI, and
+    core/dossier_assembly.py's final Dossier gap_map for fields still
+    unresolved after the interview) -- only this LLM-facing copy differs.
+    """
+    enriched = {}
+    for field_path, reason in gap_map.items():
+        section, _, key = field_path.partition(".")
+        field_obj = dossier_partial.get(section, {}).get(key)
+        value = field_obj.get("value") if field_obj else None
+        if field_obj and isinstance(value, str) and value.strip():
+            label = field_obj.get("evidence_label", "")
+            enriched[field_path] = f"{reason} | Existing research value ({label}): {value.strip()}"
+        else:
+            enriched[field_path] = reason
+    return enriched
+
+
 def start_interview(gap_map: dict, dossier_partial: dict) -> tuple:
     """Start the interview and return (first_question_text, messages)."""
+    interview_gap_map = _enrich_gap_map_for_interview(gap_map, dossier_partial)
     initial_message = (
-        f"gap_map:\n{json.dumps(gap_map, ensure_ascii=False)}\n\n"
+        f"gap_map:\n{json.dumps(interview_gap_map, ensure_ascii=False)}\n\n"
         f"dossier_partial:\n{json.dumps(dossier_partial, ensure_ascii=False)}\n\n"
         f"mandatory_fields: {MANDATORY_FIELDS}\n\n"
         "Begin the interview now with the first question."

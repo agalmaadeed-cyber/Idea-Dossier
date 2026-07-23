@@ -13,6 +13,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from core.field_registry import MANDATORY_FIELDS
+from agents.interview_agent import _enrich_gap_map_for_interview
 
 ROOT = Path(__file__).resolve().parent.parent
 OUTPUT_TXT = ROOT / "scripts" / "manual_test_output.txt"
@@ -40,9 +41,14 @@ def main():
         encoding="utf-8",
     )
 
-    # Same construction as agents.interview_agent.start_interview()
+    # Same construction as agents.interview_agent.start_interview() --
+    # a.7 fix, 2026-07-23: now reuses the real _enrich_gap_map_for_interview()
+    # helper directly (rather than a second hand-duplicated copy of the old,
+    # un-enriched construction) so a future fixture regeneration can never
+    # silently drift from what start_interview() actually sends.
+    interview_gap_map = _enrich_gap_map_for_interview(gap_map, dossier_partial)
     initial_message = (
-        f"gap_map:\n{json.dumps(gap_map, ensure_ascii=False)}\n\n"
+        f"gap_map:\n{json.dumps(interview_gap_map, ensure_ascii=False)}\n\n"
         f"dossier_partial:\n{json.dumps(dossier_partial, ensure_ascii=False)}\n\n"
         f"mandatory_fields: {MANDATORY_FIELDS}\n\n"
         "Begin the interview now with the first question."
