@@ -20,7 +20,10 @@ FIXTURES = {
 }
 
 # Every field this mapper can ever produce, per the mapping table.
-MAPPED_FIELD_CODES = ["A1", "A3", "B1", "C1", "C2", "C4", "D3", "D4", "D6", "F3", "F4"]
+MAPPED_FIELD_CODES = ["A1", "A3", "B1", "C1", "C2", "C4", "D3", "D4", "D6", "F3"]
+# F4 (assumptions) deliberately excluded -- a.6 fix, 2026-07-23: uh_mapper no
+# longer fills it; Research Agent phrases it (or leaves it UNKNOWN) instead.
+# See core/uh_mapper.py::parse_uh_report()'s docstring for the full rationale.
 
 
 def _leaf_path(field_code):

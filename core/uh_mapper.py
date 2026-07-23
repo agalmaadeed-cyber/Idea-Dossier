@@ -43,12 +43,17 @@ _VERIFIED_ONLY_LABELS = ["Final Overall Score (after verification)", "Final Deci
 _SHARED_LABELS = [l for l in LABELS if l not in _INITIAL_ONLY_LABELS and l not in _VERIFIED_ONLY_LABELS]
 
 # "What Changed After Field Verification" is not one of the 16 mapped
-# labels (it's captured separately for F4), but in some reports it appears
+# labels -- this mapper deliberately does not read it (a.6 fix, cross-
+# project evaluation, 2026-07-23: F4/assumptions used to be filled
+# straight from this section's raw literal text; now the same raw
+# report text reaches Research Agent instead, which phrases it properly
+# or leaves it UNKNOWN -- see parse_uh_report()'s docstring). It still
+# needs to stay in the boundary list below: in some reports it appears
 # as an inline "**bold field:**" between Risks and Final Overall Score
 # (see uh_report_bakery.md) rather than as its own "## " section (see
-# uh_report_manager_productivity.md). Every label's lookahead boundary
-# must still know about it, or a field like Risks would swallow it whole
-# when it appears inline.
+# uh_report_manager_productivity.md), and every OTHER label's lookahead
+# boundary must still know about it, or a field like Risks would
+# swallow it whole when it appears inline.
 _BOUNDARY_LABELS = LABELS + ["What Changed After Field Verification"]
 _BOUNDARY_ALTERNATION = "|".join(re.escape(l) for l in _BOUNDARY_LABELS)
 
@@ -97,32 +102,6 @@ def _extract_labels(block_text: str) -> dict:
     return values
 
 
-def _extract_section(full_text: str, heading_text: str):
-    """Extract a "## Heading" section's content, up to the next "## "
-    heading, "---" line, or end of file."""
-    pattern = re.compile(
-        rf"(?:^|\n)##\s*{re.escape(heading_text)}\s*\n(.+?)(?=\n##\s|\n---|\Z)",
-        re.DOTALL,
-    )
-    match = pattern.search(full_text)
-    return match.group(1).strip() if match else None
-
-
-def _extract_what_changed(full_text: str):
-    """"What Changed After Field Verification" appears either as its own
-    "## " section, or as an inline "**bold field:**" within the block —
-    try both."""
-    section = _extract_section(full_text, "What Changed After Field Verification")
-    if section:
-        return section
-
-    match = re.compile(
-        rf"(?:^|\n)\*\*What Changed After Field Verification:?\*\*\s*(.+?)(?=\n\*\*(?:{_BOUNDARY_ALTERNATION}):?\*\*|\n---|\Z)",
-        re.DOTALL,
-    ).search(full_text)
-    return match.group(1).strip() if match else None
-
-
 def _write_field(dossier_partial: dict, field_code: str, value: str, notes: str, now: str, warnings: list):
     """Same guard-clause principle as app.py's merge_research_into_skeleton:
     verify the mapping target actually exists in FIELD_REGISTRY before
@@ -145,6 +124,27 @@ def _write_field(dossier_partial: dict, field_code: str, value: str, notes: str,
 
 def parse_uh_report(raw_markdown: str) -> dict:
     """Parse a Unicorn Hunter Opportunity Report into a partial Dossier fill.
+
+    F4 (success_definition.assumptions) is deliberately NOT filled here
+    (a.6 fix, cross-project evaluation, 2026-07-23). It used to be filled
+    straight from the raw "What Changed After Field Verification" /
+    "Field Verification Answers" sections -- literal, unphrased founder
+    answer fragments, still tagged evidence_label="ESTIMATE" like every
+    other uh_mapper field, which let raw fragments count toward Dossier
+    readiness with no real synthesis behind them. Rather than adding a new
+    LLM call just for this one field, the simplest fix reuses existing
+    machinery: F4 is left out of dossier_partial here, so it is NOT part
+    of the pre_filled_fields Research Agent receives -- Research Agent
+    already reads this exact raw report text as its own raw_input, and
+    already applies its full CONFIRMED/ESTIMATE/UNKNOWN evidence-label
+    discipline to success_definition.assumptions like any other field
+    (see agents/research_agent.py's OUTPUT FORMAT). If Research Agent can
+    honestly phrase a coherent assumptions statement from that raw text,
+    it fills F4 itself and wins app.py's _merge_dossier_partials() (the
+    Research Agent delta always takes precedence on overlap). If it
+    can't, F4 correctly stays UNKNOWN via the existing skeleton default --
+    exactly the founder's "phrase it, or classify UNKNOWN" requirement,
+    with zero new code beyond this exclusion.
 
     Returns:
     {
@@ -193,17 +193,6 @@ def parse_uh_report(raw_markdown: str) -> dict:
     if revenue_model:
         for field_code in ("D3", "D4"):
             _write_field(dossier_partial, field_code, revenue_model, "Extracted from Unicorn Hunter report, label: 'Revenue Model'", now, warnings)
-
-    # --- What Changed After Field Verification + Field Verification Answers -> F4 (merged) ---
-    what_changed = _extract_what_changed(raw_markdown)
-    verification_answers = _extract_section(raw_markdown, "Field Verification Answers")
-    f4_parts = [p for p in (what_changed, verification_answers) if p]
-    if f4_parts:
-        _write_field(
-            dossier_partial, "F4", "\n".join(f4_parts),
-            "Combined from Unicorn Hunter sections: 'What Changed After Field Verification' and 'Field Verification Answers'",
-            now, warnings,
-        )
 
     # --- Source metadata (fields with no dossier field_code match) ---
     idea_id_match = _IDEA_ID_RE.search(raw_markdown)

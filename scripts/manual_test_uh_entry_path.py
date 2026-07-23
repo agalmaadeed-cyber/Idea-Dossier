@@ -31,7 +31,9 @@ EXPECTED_UH_PATHS = {
     "opportunity.problem", "opportunity.current_solutions", "customer_market.payer",
     "solution.description", "solution.value", "solution.usage",
     "business_model.pricing", "business_model.revenue_potential", "business_model.channels",
-    "success_definition.risks", "success_definition.assumptions",
+    "success_definition.risks",
+    # success_definition.assumptions (F4) deliberately excluded -- a.6 fix,
+    # 2026-07-23: uh_mapper no longer fills it, Research Agent does.
 }
 
 
@@ -72,7 +74,7 @@ def main():
     assert set(existing_partial.keys()) == EXPECTED_UH_PATHS
     for path, value in existing_partial.items():
         assert isinstance(value, str), f"{path} value is not a flat string: {type(value)}"
-    out.append(f"\nkeys match expected 11 paths: True; every value is a plain string (not a leaf dict): True")
+    out.append(f"\nkeys match expected {len(EXPECTED_UH_PATHS)} paths: True; every value is a plain string (not a leaf dict): True")
 
     out.append("\n" + "=" * 70)
     out.append("STEP 4: _merge_dossier_partials() combines uh_mapper fields with a fake research delta")
@@ -90,7 +92,7 @@ def main():
     assert combined_paths == EXPECTED_UH_PATHS | {"customer_market.market_size"}
     assert combined["opportunity"]["problem"]["filled_by"] == "uh_mapper", "uh_mapper field got clobbered by merge"
     assert combined["customer_market"]["market_size"]["filled_by"] == "research_agent"
-    out.append("uh_mapper's original 11 fields preserved + delta's 1 new field added — PASS")
+    out.append(f"uh_mapper's original {len(EXPECTED_UH_PATHS)} fields preserved + delta's 1 new field added — PASS")
     out.append("uh_mapper's dossier_partial dict itself was not mutated by the merge (deepcopy check):")
     assert "market_size" not in uh_dossier_partial.get("customer_market", {})
     out.append("  PASS — original uh_dossier_partial unchanged")
