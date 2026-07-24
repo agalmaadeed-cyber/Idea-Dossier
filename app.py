@@ -336,6 +336,7 @@ def _reset_session_state():
     st.session_state.last_updated_field = None
     st.session_state.field_update_warnings = []
     st.session_state.parse_failed_fields = set()
+    st.session_state.pending_founder_turns = []
 
 
 def _init_session_state():
@@ -355,6 +356,7 @@ def _init_session_state():
         st.session_state.last_updated_field = None
         st.session_state.field_update_warnings = []
         st.session_state.parse_failed_fields = set()
+        st.session_state.pending_founder_turns = []
 
     if "dossier" not in st.session_state:
         st.session_state.dossier = build_dossier_skeleton()
@@ -517,6 +519,7 @@ def main():
 
             st.session_state.interview_messages = interview_messages
             st.session_state.chat_history.append({"role": "assistant", "content": first_question})
+            st.session_state.pending_founder_turns = []
             st.session_state.stage = "interviewing"
             # a.10 fix (cross-project evaluation, 2026-07-24): an active,
             # ephemeral notification that Research is done and the
@@ -535,7 +538,11 @@ def main():
             st.session_state.chat_history.append({"role": "user", "content": answer})
 
             try:
-                result = continue_interview(st.session_state.interview_messages, answer)
+                result = continue_interview(
+                    st.session_state.interview_messages,
+                    answer,
+                    st.session_state.get("pending_founder_turns"),
+                )
             except Exception as e:
                 st.session_state.chat_history.append({
                     "role": "assistant",
@@ -544,6 +551,7 @@ def main():
                 st.rerun()
 
             st.session_state.interview_messages = result["messages"]
+            st.session_state.pending_founder_turns = result["pending_founder_turns"]
 
             if result["field_update"] is not None:
                 st.session_state.interview_updates.append(_flatten_field_update(result["field_update"]))

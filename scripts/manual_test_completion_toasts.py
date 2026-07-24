@@ -60,21 +60,29 @@ def _fake_start_interview(gap_map, dossier_partial):
     return "(fake first interview question)", [{"role": "assistant", "content": "(fake first interview question)"}]
 
 
-def _fake_continue_interview_ordinary(messages, answer):
+def _fake_continue_interview_ordinary(messages, answer, pending_founder_turns=None):
+    # b.3 amendment (2026-07-24): continue_interview()'s real signature
+    # gained a third parameter, pending_founder_turns, and now always
+    # returns a "pending_founder_turns" key in its result -- this fake
+    # must match both, or app.py's own call site (extra positional arg)
+    # and its unconditional result["pending_founder_turns"] read (missing
+    # key) both break, independent of anything this test intends to check.
     return {
         "messages": messages + [{"role": "user", "content": answer}],
         "field_update": None,
         "next_question": "(fake next question)",
         "next_action": "continue",
+        "pending_founder_turns": (pending_founder_turns or []) + [answer],
     }
 
 
-def _fake_continue_interview_complete(messages, answer):
+def _fake_continue_interview_complete(messages, answer, pending_founder_turns=None):
     return {
         "messages": messages + [{"role": "user", "content": answer}],
         "field_update": None,
         "next_question": None,
         "next_action": "interview_complete",
+        "pending_founder_turns": [],
     }
 
 

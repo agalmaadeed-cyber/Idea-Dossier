@@ -125,6 +125,18 @@ _PARSE_FAILURE_MESSAGE_AR = "حدث خلل تقني في معالجة إجابت
 _PARSE_FAILURE_MESSAGE_EN = "There was a technical glitch processing your last answer — could you rephrase it?"
 
 
+# b.3 fix (deferred design session, 2026-07-24): the system prompt already
+# promises "the final content must be the founder's own words, not your
+# invention" for these two fields specifically -- this had no code-level
+# enforcement until now. See continue_interview()'s docstring below for
+# the full mechanism. Scope deliberately narrow: every other field's
+# model-synthesized value is intended, desired behavior, not a risk.
+_VERBATIM_REQUIRED_FIELDS = {
+    "success_definition.success_criteria",
+    "success_definition.kill_criteria",
+}
+
+
 def _extract_text(response):
     return "".join(block.text for block in response.content if getattr(block, "type", None) == "text")
 
@@ -265,8 +277,29 @@ def start_interview(gap_map: dict, dossier_partial: dict) -> tuple:
     return reply_text, updated_messages
 
 
-def continue_interview(messages: list, founder_answer: str) -> dict:
-    """Send the founder's answer, classify it, and return the next question."""
+def continue_interview(messages: list, founder_answer: str, pending_founder_turns: list = None) -> dict:
+    """Send the founder's answer, classify it, and return the next question.
+
+    b.3 fix (deferred design session, 2026-07-24): pending_founder_turns
+    accumulates the founder's raw answer text across every turn spent on
+    the CURRENT gap -- a field may need one or more follow-up questions
+    (per the system prompt's "ask ONE targeted follow-up" rule) before it
+    resolves. Once a field finally resolves, if it's one of
+    _VERBATIM_REQUIRED_FIELDS (F1/F2), the resolved value is REPLACED
+    with this exact concatenated founder text, discarding the model's
+    own generated "value" string for that one field only -- enforcing
+    the "founder's own words, not your invention" promise the system
+    prompt already makes but could not previously guarantee in code.
+    Every other field is completely unaffected: synthesizing a
+    structured value from the founder's natural conversation is their
+    intended, desired behavior, not something this fix restricts.
+
+    Caller is responsible for persisting the returned
+    "pending_founder_turns" and passing it back in on the next call
+    (see app.py's st.session_state.pending_founder_turns) -- this
+    function stays Streamlit-independent and directly testable.
+    """
+    pending_founder_turns = (pending_founder_turns or []) + [founder_answer]
     messages = messages + [{"role": "user", "content": founder_answer}]
 
     response = call_agent(system_prompt=INTERVIEW_AGENT_SYSTEM_PROMPT, messages=messages)
@@ -288,6 +321,8 @@ def continue_interview(messages: list, founder_answer: str) -> dict:
         field_code = _REVERSE_LOOKUP.get((section, key))
 
         value = parsed.get("value", {})
+        if field_path in _VERBATIM_REQUIRED_FIELDS:
+            value["value"] = "\n".join(pending_founder_turns).strip()
         if field_code:
             value["field_code"] = field_code
         value["filled_by"] = "interview_agent"
@@ -296,6 +331,7 @@ def continue_interview(messages: list, founder_answer: str) -> dict:
         field_update = {"field_updated": field_path, "value": value}
         next_action = parsed.get("next_action", "ask_next_question")
         next_question = remainder if remainder and next_action != "interview_complete" else None
+        pending_founder_turns = []  # this gap is resolved -- reset for the next one
     elif '"field_updated"' in reply_text:
         # The model attempted a field update, but the JSON genuinely failed
         # to parse even after stripping invisible bidi/format characters.
@@ -316,4 +352,5 @@ def continue_interview(messages: list, founder_answer: str) -> dict:
         "messages": messages,
         "parse_failure": parse_failure,
         "failed_field_path": failed_field_path,
+        "pending_founder_turns": pending_founder_turns,
     }
