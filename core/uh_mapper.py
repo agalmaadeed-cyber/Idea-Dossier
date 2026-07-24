@@ -102,18 +102,53 @@ def _extract_labels(block_text: str) -> dict:
     return values
 
 
-def _write_field(dossier_partial: dict, field_code: str, value: str, notes: str, now: str, warnings: list):
+# b.6 fix (deferred design session, 2026-07-24): the one real field-
+# combination site in this project (C2, below) was safe only as a side
+# effect of every uh_mapper-written field sharing one hardcoded
+# "ESTIMATE" default -- not because any code actually enforced that a
+# combined/merged field (which may conflate sub-claims of genuinely
+# different confidence) can never be assigned a stronger label than its
+# weakest component. VDVE's scanner.py skips ONLY fields labeled exactly
+# CONFIRMED (never stress-tested); a combined field silently upgraded to
+# CONFIRMED in the future would quietly bypass that testing. This turns
+# the invariant into something explicit and enforced, scoped narrowly to
+# this repo's one actual combining site -- not a speculative fix for a
+# risk that doesn't exist elsewhere in the code today (root cause
+# investigated 2026-07-23; scope decided in this design session,
+# 2026-07-24: founder chose a contained uh_mapper.py-only guard over a
+# broader cross-repo schema change, since no second combination site
+# currently exists to justify one).
+_EVIDENCE_LABEL_RANK = {"UNKNOWN": 0, "ASSUMPTION": 1, "FOUNDER_OPINION": 1, "ESTIMATE": 2, "CONFIRMED": 3}
+_COMBINED_FIELD_LABEL_CEILING = "ESTIMATE"
+
+
+def _write_field(
+    dossier_partial: dict, field_code: str, value: str, notes: str, now: str, warnings: list,
+    *, is_combined: bool = False, evidence_label: str = "ESTIMATE",
+):
     """Same guard-clause principle as app.py's merge_research_into_skeleton:
     verify the mapping target actually exists in FIELD_REGISTRY before
-    writing, else warn instead of raising."""
+    writing, else warn instead of raising.
+
+    is_combined=True marks a field whose value merges more than one
+    distinct underlying claim (currently only C2 -- see its call site
+    below). For such fields, evidence_label can never exceed
+    _COMBINED_FIELD_LABEL_CEILING -- violating this raises ValueError,
+    a structural integrity failure that must surface loudly, not be
+    silently downgraded (b.6 fix, 2026-07-24)."""
     if field_code not in FIELD_REGISTRY:
         warnings.append(f"mapping target field_code not in FIELD_REGISTRY: {field_code!r}")
         return
+    if is_combined and _EVIDENCE_LABEL_RANK[evidence_label] > _EVIDENCE_LABEL_RANK[_COMBINED_FIELD_LABEL_CEILING]:
+        raise ValueError(
+            f"{field_code}: a combined/merged field can never be assigned '{evidence_label}' -- "
+            f"weakest-link governs; ceiling is '{_COMBINED_FIELD_LABEL_CEILING}' (b.6 fix, 2026-07-24)"
+        )
     field = FIELD_REGISTRY[field_code]
     section, key = field["section"], field["key"]
     dossier_partial.setdefault(section, {})[key] = {
         "value": value,
-        "evidence_label": "ESTIMATE",
+        "evidence_label": evidence_label,
         "sources": [],
         "notes": notes,
         "field_code": field_code,
@@ -185,7 +220,7 @@ def parse_uh_report(raw_markdown: str) -> dict:
         _write_field(
             dossier_partial, "C2", "\n".join(c2_parts),
             "Combined from Unicorn Hunter labels: 'Proposed Solution' and 'Why Would the Customer Pay?'",
-            now, warnings,
+            now, warnings, is_combined=True,
         )
 
     # --- Revenue Model -> D3 AND D4 (same text, both fields) ---
