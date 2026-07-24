@@ -32,6 +32,15 @@ _EVIDENCE_ICONS = {
     "UNKNOWN": "❓",
 }
 
+# a.8 fix (cross-project evaluation, 2026-07-23): the sidebar is a narrow,
+# fixed-width column -- rendering a long field's full value inline there
+# (e.g. a two-sentence market_size research paragraph) makes it cramped
+# and hard to read. Fields at or under this length still render inline in
+# the sidebar as before; fields over it are redirected to a dedicated
+# collapsible section in the main area instead (see
+# _render_long_fields_expander()). Founder-approved threshold, 2026-07-23.
+_SIDEBAR_LENGTH_THRESHOLD = 80
+
 
 def _detect_language(text: str) -> str:
     return "ar" if _ARABIC_RE.search(text) else "en"
@@ -239,6 +248,11 @@ def render_dossier_panel():
                 label = _humanize_key(key)
                 if leaf["evidence_label"] == "UNKNOWN":
                     line = f"{icon} {label}"
+                elif _is_long_field(leaf):
+                    # a.8 fix: long content redirected to the main-area
+                    # expander (_render_long_fields_expander()) instead of
+                    # being crammed into the narrow sidebar column.
+                    line = f"{icon} {label} — 📄 التفاصيل في الأعلى"
                 else:
                     line = f"{icon} {label}: {leaf['value']}"
 
@@ -249,6 +263,56 @@ def render_dossier_panel():
 
     for warning in st.session_state.get("field_update_warnings", []):
         st.warning(f"تعذر تحديث الحقل في اللوحة الجانبية: {warning}")
+
+
+def _is_long_field(leaf: dict) -> bool:
+    """Pure predicate, no Streamlit dependency -- a.8 fix (cross-project
+    evaluation, 2026-07-23). A field is "long" (redirected to the
+    main-area expander instead of the sidebar) only if it's actually
+    filled (not UNKNOWN) and its value's length exceeds the founder-set
+    threshold. Kept as its own testable function rather than inlined
+    twice (once in the sidebar loop, once in the expander collector)."""
+    if leaf["evidence_label"] == "UNKNOWN":
+        return False
+    value = leaf.get("value", "")
+    return isinstance(value, str) and len(value) > _SIDEBAR_LENGTH_THRESHOLD
+
+
+def _collect_long_fields(sections: dict) -> list:
+    """Pure, no Streamlit dependency -- a.8 fix. Returns
+    [(icon, humanized_label, value), ...] for every long field across all
+    sections, in section/insertion order. Used by
+    _render_long_fields_expander(); factored out so the actual
+    long-vs-short classification logic is unit-testable without a live
+    Streamlit script context."""
+    collected = []
+    for fields in sections.values():
+        for key, leaf in fields.items():
+            if _is_long_field(leaf):
+                icon = _EVIDENCE_ICONS.get(leaf["evidence_label"], "❓")
+                collected.append((icon, _humanize_key(key), leaf["value"]))
+    return collected
+
+
+def _render_long_fields_expander():
+    """Main-area counterpart to render_dossier_panel()'s sidebar summary
+    (a.8 fix, cross-project evaluation, 2026-07-23). Every filled field
+    whose value exceeds _SIDEBAR_LENGTH_THRESHOLD gets its full text shown
+    here instead of the cramped sidebar column -- collapsed by default so
+    it never displaces the active chat conversation; the founder opens it
+    only when they actually want to read the longer research paragraphs.
+    Renders nothing at all if there are no long fields yet (nothing to
+    show early in a fresh interview)."""
+    long_fields = _collect_long_fields(st.session_state.dossier["sections"])
+
+    if not long_fields:
+        return
+
+    with st.expander(f"📄 تفاصيل إضافية ({len(long_fields)})", expanded=False):
+        for icon, label, value in long_fields:
+            st.markdown(f"**{icon} {label}**")
+            st.markdown(value)
+            st.divider()
 
 
 # ---------------------------------------------------------------------------
@@ -310,6 +374,11 @@ def main():
         render_dossier_panel()
 
     st.title("Idea Dossier")
+    # a.8 fix (cross-project evaluation, 2026-07-23): rendered once here,
+    # stage-independently, same placement pattern as the sidebar panel
+    # above -- collapsed by default, so it never displaces the active
+    # chat conversation in any stage.
+    _render_long_fields_expander()
 
     if st.session_state.stage == "awaiting_input":
         _render_chat_history()
