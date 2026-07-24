@@ -518,6 +518,11 @@ def main():
             st.session_state.interview_messages = interview_messages
             st.session_state.chat_history.append({"role": "assistant", "content": first_question})
             st.session_state.stage = "interviewing"
+            # a.10 fix (cross-project evaluation, 2026-07-24): an active,
+            # ephemeral notification that Research is done and the
+            # Interview has started -- previously a silent st.rerun() with
+            # no signal beyond the chat history updating.
+            st.toast("Research complete — starting interview.", icon="✅")
 
         st.rerun()
 
@@ -587,6 +592,11 @@ def main():
                     ),
                 })
                 st.session_state.stage = "complete"
+                # a.10 fix (cross-project evaluation, 2026-07-24): the
+                # whole-Dossier completion -- fires only on this specific
+                # branch (interview_complete), not on every ordinary
+                # interview turn's rerun below, which would be noise.
+                st.toast("Dossier complete!", icon="🎉")
 
             st.rerun()
 
