@@ -17,6 +17,10 @@ from agents.research_agent import run_research
 from agents.interview_agent import start_interview, continue_interview
 from core.dossier_assembly import assemble_dossier
 from core.field_registry import FIELD_REGISTRY, MANDATORY_FIELDS
+from core.success_criteria_suggestions import (
+    SECTOR_OPTIONS, MARKET_SIZE_BAND_OPTIONS, DEFAULT_SECTOR_KEY, DEFAULT_BAND_KEY,
+    get_success_kill_criteria_suggestion,
+)
 from core.readiness import compute_readiness_score
 from core.uh_mapper import parse_uh_report
 from storage import init_db, save_dossier_version
@@ -89,6 +93,29 @@ def _render_chat_history():
     for message in st.session_state.chat_history:
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
+
+
+def _render_success_kill_criteria_suggestion():
+    """b.5 (deferred design session, 2026-07-24): a non-binding, always
+    editable/discardable ESTIMATE, decoupled from the chat itself (never
+    injected as if it were the founder speaking, never auto-fills a
+    field -- especially important after Packet #16's b.3 fix, which
+    requires F1/F2's recorded value to be the founder's own verbatim
+    chat text). Only rendered while at least one of F1/F2 is still
+    unanswered in the live dossier; disappears once both are answered."""
+    success_unanswered = st.session_state.dossier["sections"]["success_definition"]["success_criteria"]["value"] is None
+    kill_unanswered = st.session_state.dossier["sections"]["success_definition"]["kill_criteria"]["value"] is None
+    if not (success_unanswered or kill_unanswered):
+        return
+
+    suggestion = get_success_kill_criteria_suggestion(
+        st.session_state.get("selected_sector_key", DEFAULT_SECTOR_KEY),
+        st.session_state.get("selected_band_key", DEFAULT_BAND_KEY),
+    )
+    with st.expander("💡 اقتراح مبدئي لمعايير النجاح/الفشل (تقدير)", expanded=False):
+        st.caption("هذا اقتراح تقديري غير ملزم وليس إجابة تلقائية -- أجب على سؤال الوكيل بكلماتك الخاصة، ويمكنك الاستعانة بهذا الاقتراح كنقطة انطلاق أو تجاهله بالكامل.")
+        st.markdown(f"**معيار النجاح المقترح:** {suggestion['success_criteria']}")
+        st.markdown(f"**معيار التوقف المقترح:** {suggestion['kill_criteria']}")
 
 
 # ---------------------------------------------------------------------------
@@ -337,6 +364,8 @@ def _reset_session_state():
     st.session_state.field_update_warnings = []
     st.session_state.parse_failed_fields = set()
     st.session_state.pending_founder_turns = []
+    st.session_state.selected_sector_key = DEFAULT_SECTOR_KEY
+    st.session_state.selected_band_key = DEFAULT_BAND_KEY
 
 
 def _init_session_state():
@@ -357,6 +386,8 @@ def _init_session_state():
         st.session_state.field_update_warnings = []
         st.session_state.parse_failed_fields = set()
         st.session_state.pending_founder_turns = []
+        st.session_state.selected_sector_key = DEFAULT_SECTOR_KEY
+        st.session_state.selected_band_key = DEFAULT_BAND_KEY
 
     if "dossier" not in st.session_state:
         st.session_state.dossier = build_dossier_skeleton()
@@ -391,6 +422,23 @@ def main():
                 "اختر طريقة البدء",
                 ["فكرة خارجية", "تقرير Unicorn Hunter"],
                 key="input_mode",
+            )
+
+            # b.5 (deferred design session, 2026-07-24): always-optional,
+            # founder-supplied selectors -- never inferred or extracted.
+            # Shown for both entry paths; defaults are the safe fallback
+            # so an idea can always be submitted without engaging these.
+            st.session_state.selected_sector_key = st.selectbox(
+                "القطاع (اختياري -- لاقتراح معايير نجاح/فشل مبدئية)",
+                options=[key for key, _label in SECTOR_OPTIONS],
+                format_func=lambda key: dict(SECTOR_OPTIONS)[key],
+                key="sector_selectbox",
+            )
+            st.session_state.selected_band_key = st.selectbox(
+                "حجم السوق التقديري (اختياري)",
+                options=[key for key, _label in MARKET_SIZE_BAND_OPTIONS],
+                format_func=lambda key: dict(MARKET_SIZE_BAND_OPTIONS)[key],
+                key="band_selectbox",
             )
 
             if input_mode == "فكرة خارجية":
@@ -530,6 +578,7 @@ def main():
         st.rerun()
 
     elif st.session_state.stage == "interviewing":
+        _render_success_kill_criteria_suggestion()
         _render_chat_history()
 
         answer = st.chat_input("اكتب إجابتك هنا...")
